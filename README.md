@@ -1,23 +1,13 @@
 # NBA Props Research Toolkit
 
-A Python research pipeline for collecting NBA player-game and sportsbook data,
-building probabilistic player-prop models, replaying historical decisions, and
-monitoring execution quality.
+[![Tests](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml/badge.svg)](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml)
 
-The repository includes:
+A Python toolkit for collecting NBA player-prop data, training probability
+models, backtesting predictions, and checking execution quality.
 
-- NBA and sportsbook scrapers backed by DuckDB
-- baseline, HMM minutes, quantile-forest, calibration, and uncertainty models
-- walk-forward replay, backtesting, Monte Carlo, cohort, and attribution tools
-- settlement, closing-line, health, drift, and shadow-tracking controls
-- 221 automated tests covering the reusable analytics components
+## 1. Setup
 
-> This is research software, not financial advice. Model output is uncertain;
-> comply with all laws and sportsbook rules that apply to you.
-
-## Quick start
-
-Requirements: Git and Python 3.11.
+You need Git and Python 3.11.
 
 ```bash
 git clone https://github.com/johnshun001/nba-props.git
@@ -27,59 +17,66 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
 python setup_env.py
-python -m pytest -q
 ```
 
-On Windows PowerShell, activate the environment with:
+On Windows PowerShell, replace the activation command with:
 
 ```powershell
 .venv\Scripts\Activate.ps1
 ```
 
-`setup_env.py` creates `data/raw.db` and the raw-ingestion table. Databases,
-API keys, generated reports, and trained pickle files are intentionally local
-and excluded from Git.
+The final setup command creates a fresh local database at `data/raw.db`.
 
-## Optional odds API configuration
+### Optional: sportsbook odds
 
-NBA statistics use the public `nba_api` package. Live sportsbook collection uses
-[The Odds API](https://the-odds-api.com/) and requires each user to provide their
-own key:
+NBA statistics use the public `nba_api` package. Sportsbook odds require a key
+from [The Odds API](https://the-odds-api.com/).
 
 ```bash
-cp .env.example .env
 export ODDS_API_KEY="your-key-here"
 ```
 
-The scripts read environment variables from the shell; they do not load `.env`
-automatically. Never commit a real API key.
+Each user must supply their own key. Never commit it to Git.
 
-## Build the local dataset
+## 2. Run
 
-Run commands from the repository root. The default example season is `2024-25`;
-override it when needed with `NBA_SEASON`.
+Always run commands from the repository root with the virtual environment
+activated.
+
+### Check that everything works
+
+```bash
+python -m pytest -q
+```
+
+Expected result: `224 passed`.
+
+### Collect and prepare data
 
 ```bash
 export NBA_SEASON="2024-25"
 python -m scrapers.nba_scraper
 python -m storage.player_lookup
 python -m scrapers.schedule_scraper
-python -m scrapers.odds_scraper       # requires ODDS_API_KEY
 python -m storage.materialize
 ```
 
-For the additional historical season configured in the script:
+Sportsbook odds are optional and require `ODDS_API_KEY`:
+
+```bash
+python -m scrapers.odds_scraper
+python -m storage.materialize
+```
+
+To collect the additional historical season configured in the project:
 
 ```bash
 python -m scripts.ingest_historical
 ```
 
-The upstream NBA endpoints can throttle or change. Re-run failed collection
-commands after a short pause and inspect their console output before modeling.
+### Train the models
 
-## Train and evaluate models
-
-After `player_game_features` has been materialized:
+Run these after data collection:
 
 ```bash
 python -m models.hmm_minutes
@@ -87,58 +84,78 @@ python -m models.qrf_model
 python -m models.teammate_shock
 python -m tests.replay
 python -m models.calibration
-python -m tests.backtest
 ```
 
-Generated model artifacts are written under `models/*_store/`; replay output is
-written to `data/replay_results.csv`. These files are reproducible runtime
-artifacts and are ignored by Git.
-
-## Execution checks
-
-The execution modules use the same local DuckDB database:
+### Run the reports and checks
 
 ```bash
+python -m tests.backtest
 python -m execution.health_check
-python -m execution.close_spec
 python -m execution.shadow_tracker
+python -m execution.close_spec
 python -m execution.settlement_engine
 python -m execution.drift_monitor
 ```
 
-`execution/settlement_rules.csv` is version-controlled because the settlement
-engine fails closed when a required rule is absent.
+Some execution checks need schedule, odds, and shadow-prediction records in the
+local database. If that data does not exist yet, the command will report that
+there is nothing to evaluate.
 
-## Project layout
+## 3. Results
 
-```text
-analysis/           Backtests, experiments, Monte Carlo, and attribution
-commercialization/  Track-record, research, signal, and syndicate utilities
-execution/          Health, close, settlement, shadow, and drift controls
-models/             Statistical and machine-learning models
-nba_analytics/      Market-efficiency and performance research
-schemas/            Pydantic validation models
-scrapers/           NBA schedule, game-log, and sportsbook collectors
-scripts/            End-to-end ingestion helpers
-storage/            Database materialization and bet tracking
-tests/              Automated tests and offline replay tools
-```
+Commands print summaries in the terminal and save generated files locally:
 
-## Sharing data or pretrained models
+| Result | Location |
+| --- | --- |
+| Collected and materialized data | `data/raw.db` |
+| Walk-forward predictions | `data/replay_results.csv` |
+| Minutes models | `models/hmm_store/` |
+| Quantile-forest models | `models/qrf_store/` |
+| Teammate-shock models | `models/shock_store/` |
+| Calibration models | `models/calibration_store/` |
+| Generated reports | `output/` and the relevant analytics folders |
+| Automated test history | [GitHub Actions](https://github.com/johnshun001/nba-props/actions) |
 
-The GitHub repository contains source code only. If a collaborator needs the
-exact current state, send `data/raw.db` and the relevant `models/*_store/`
-directories through a private file-sharing channel. DuckDB files may contain
-collected operational history, and pickle files should only be opened when they
-come from a trusted sender.
+These results are excluded from Git because they are generated, can be large,
+and may contain private operational data. To give a collaborator your exact
+current results, send the required database or model directories separately
+through a private file-sharing channel.
 
-## Development
+Do not open pickle model files from untrusted sources.
 
-```bash
-python -m pip install -r requirements-dev.txt
-python -m compileall -q .
-python -m pytest -q
-```
+## Command summary
 
-GitHub Actions runs the same compile and test checks on every push and pull
-request.
+| Goal | Command |
+| --- | --- |
+| Initialize the database | `python setup_env.py` |
+| Verify the installation | `python -m pytest -q` |
+| Collect player game logs | `python -m scrapers.nba_scraper` |
+| Collect sportsbook odds | `python -m scrapers.odds_scraper` |
+| Build feature tables | `python -m storage.materialize` |
+| Train minutes models | `python -m models.hmm_minutes` |
+| Train prop models | `python -m models.qrf_model` |
+| Generate replay results | `python -m tests.replay` |
+| Run historical backtest | `python -m tests.backtest` |
+
+## Project folders
+
+| Folder | Purpose |
+| --- | --- |
+| `scrapers/` | NBA schedule, game-log, and sportsbook collection |
+| `storage/` | Database setup, materialization, and bet tracking |
+| `models/` | Statistical and machine-learning models |
+| `analysis/` | Backtests, experiments, Monte Carlo, and attribution |
+| `execution/` | Health, close, settlement, shadow, and drift controls |
+| `nba_analytics/` | Market-efficiency and performance research |
+| `commercialization/` | Track-record, signal, and research utilities |
+| `schemas/` | Pydantic validation models |
+| `tests/` | Automated tests and offline replay tools |
+
+## Notes
+
+- Upstream NBA endpoints can throttle or change. If collection fails, wait
+  briefly, rerun it, and inspect the console output.
+- `execution/settlement_rules.csv` is version-controlled because the settlement
+  engine fails closed when a required rule is missing.
+- This is research software, not financial advice. Model output is uncertain;
+  comply with applicable laws and sportsbook rules.
