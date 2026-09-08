@@ -27,6 +27,9 @@ On Windows PowerShell, replace the activation command with:
 
 The final setup command creates a fresh local database at `data/raw.db`.
 
+For a plain-English map of what each file and folder is for, see
+[`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md).
+
 ### Optional: sportsbook odds
 
 NBA statistics use the public `nba_api` package. Sportsbook odds require a key
