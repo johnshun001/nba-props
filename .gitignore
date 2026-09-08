@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local environments and secrets
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Local databases and generated datasets
+data/*.db
+data/*.db.*
+data/replay_results.csv
+
+# Trained model artifacts (rebuild locally)
+models/*_store/
+
+# Generated reports and operational state
+output/
+logs/
+attribution/
+edge_decay/
+nba_research/
+research/
+signals/
+track_record/
+syndicate/*.json

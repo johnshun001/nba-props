@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nba-props-research"
+version = "0.1.0"
+description = "Research pipeline for NBA player-prop data, probabilistic models, backtests, and execution controls"
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = [
+  "analysis*",
+  "commercialization*",
+  "execution*",
+  "models*",
+  "nba_analytics*",
+  "schemas*",
+  "scrapers*",
+  "scripts*",
+  "storage*",
+]
+
+[tool.setuptools.package-data]
+execution = ["settlement_rules.csv"]

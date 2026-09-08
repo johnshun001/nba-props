@@ -1,0 +1,13 @@
+duckdb==1.4.4
+hmmlearn==0.3.3
+lightgbm==4.6.0
+nba_api==1.11.4
+numpy==2.4.4
+pandas==2.3.3
+pydantic==2.12.5
+pytz==2025.2
+quantile-forest==1.4.1
+requests==2.32.5
+scikit-learn==1.8.0
+scipy==1.15.3
+xgboost==3.2.0
