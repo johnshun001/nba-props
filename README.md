@@ -5,6 +5,16 @@
 A Python toolkit for collecting NBA player-prop data, training probability
 models, backtesting predictions, and checking execution quality.
 
+## Project guide
+
+The top-level numbered folders are the easiest path through the project:
+
+| Step | Folder | Use it for |
+| --- | --- | --- |
+| 1 | [`01_Setup/`](01_Setup/) | Install dependencies, configure the environment, and verify the repo. |
+| 2 | [`02_Run/`](02_Run/) | Collect data, train models, and run checks. |
+| 3 | [`03_Results/`](03_Results/) | Understand where generated outputs are saved and what to share. |
+
 ## 1. Setup
 
 You need Git and Python 3.11.

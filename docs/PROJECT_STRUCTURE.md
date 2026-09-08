@@ -11,6 +11,7 @@ settings, and verify that the project is ready to run.
 
 | Path | What it does |
 | --- | --- |
+| `01_Setup/` | Sequential guide for installing and verifying the project. |
 | `README.md` | Main starting point with setup, run, and results commands. |
 | `.env.example` | Shows the optional environment variables without exposing secrets. |
 | `requirements.txt` | Runtime Python dependencies. |
@@ -38,6 +39,7 @@ models, backtests predictions, and checks operational quality.
 
 | Path | What it does |
 | --- | --- |
+| `02_Run/` | Sequential guide for running the data, model, and check pipelines. |
 | `scrapers/` | Pulls NBA game logs, schedule data, and optional sportsbook odds. |
 | `scripts/` | One-off or convenience ingestion commands. |
 | `storage/` | Creates lookup tables, materializes features, and tracks bets. |
@@ -72,6 +74,7 @@ not committed because they can be large, generated, or private.
 
 | Path | What it contains |
 | --- | --- |
+| `03_Results/` | Sequential guide for finding and sharing generated results. |
 | `data/raw.db` | Local SQLite database created by setup and populated by the pipeline. |
 | `data/replay_results.csv` | Walk-forward prediction output. |
 | `models/hmm_store/` | Saved minutes-model artifacts. |
