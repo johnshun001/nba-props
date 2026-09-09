@@ -1,301 +1,195 @@
 # NBA Props Research Toolkit
 
+> Probabilistic forecasting for NBA player props — from raw data collection through
+> calibrated predictions, walk-forward backtesting, and execution risk controls.
+
 [![Tests](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml/badge.svg)](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/python-3.11-blue)
+![Tests](https://img.shields.io/badge/tests-237%20passing-brightgreen)
+![Status](https://img.shields.io/badge/status-research-orange)
 
-A Python toolkit for collecting NBA player-prop data, training probability
-models, backtesting predictions, and checking execution quality.
+A research pipeline that predicts full outcome **distributions** for NBA points,
+rebounds, and assists — not just point estimates — then compares them against
+sportsbook lines under strict leakage and risk controls.
 
-## Project guide
+The design goal is honesty over optimism: every stage refuses to produce output
+it cannot support, and reports `NOT_READY` instead of guessing.
 
-The top-level numbered folders are the easiest path through the project:
+> [!IMPORTANT]
+> **This does not currently produce bets.** The models train and predict correctly,
+> but probability calibration has not been fit yet, so every downstream gate is
+> closed by design. See [Project status](#project-status) for exactly why.
+> This is research software, not financial advice.
 
-| Step | Folder | Use it for |
-| --- | --- | --- |
-| 1 | [`01_Setup/`](01_Setup/) | Install dependencies, configure the environment, and verify the repo. |
-| 2 | [`02_Run/`](02_Run/) | Collect data, train models, and run checks. |
-| 3 | [`03_Results/`](03_Results/) | Understand where generated outputs are saved and what to share. |
-
-## Current status
-
-Last verified 2026-09-08 against a local database holding 10 tracked players,
-2,186 player-game rows, and 5,919 sportsbook lines.
-
-### Working end to end
-
-- **Ingestion and materialization.** `raw_api_responses` keeps immutable source
-  JSON. `storage/materialize.py` parses it into `player_game_features`,
-  `player_results`, and `prop_lines` with deterministic reproducibility hashes.
-- **Event mapping.** `storage/event_mapping.py` matches sportsbook events to NBA
-  game IDs on normalized team names plus a two-hour tip window, and rejects
-  ambiguous matches instead of guessing.
-- **Leakage-free features.** Every rolling statistic in
-  `features/pregame_features.py` is shifted by one game before the window is
-  applied, and context tables join through a backward `merge_asof` on
-  `prediction_time`. Same-game actual minutes are never a model input.
-- **Pooled ensemble training.** `models/train.py` fits LightGBM quantiles,
-  XGBoost, a quantile forest, and a PyTorch joint-quantile member over ordered,
-  disjoint train, validation, calibration, and test periods. Held-out test MAE
-  is 7.28 points, 2.15 rebounds, 1.82 assists.
-- **Selection and staking.** `execution/betting.py` converts prices to no-vig
-  probabilities, evaluates both sides, shops by expected value with fully
-  deterministic tiebreaks, and applies fractional Kelly under player, game, and
-  correlated exposure caps.
-- **Execution controls.** `health_check`, `close_spec`, `settlement_engine`, and
-  `drift_monitor` each run and report correctly.
-- **Tests.** `python -m pytest -q` reports `237 passed`.
-
-### Known gaps
-
-These are data-coverage problems rather than model problems. Every gate below
-fails closed, so the pipeline reports `NOT_READY` instead of emitting a bet it
-cannot support.
-
-- **Player-name joins do not fold diacritics.** `player_lookup` stores
-  `Luka Dončić` while the odds feed returns `Luka Doncic`, so the
-  `lower(trim(...))` joins in `analysis/replay.py`, `models/train.py`, and
-  `execution/shadow_tracker.py` silently drop those rows.
-- **Tip times are lost once a game starts.** `scrapers/schedule_scraper.py`
-  reads `GAME_STATUS_TEXT`, which becomes `Final` or `1st Qtr` after tipoff and
-  no longer parses to a timestamp. `map_events_to_games` requires a non-null
-  `tip_time_utc`, so a game collected late can never be mapped. Collect the
-  schedule before tipoff.
-- **Calibration is not fit yet.** Too few rows carry a sportsbook line inside the
-  calibration window, so `calibration_status` stays `NOT_READY` and reported
-  probabilities are uncalibrated. `analysis/replay.py` deliberately drops any
-  candidate that is not `READY`, so replay currently produces no bets.
-- **Coverage is narrow.** `scrapers/nba_scraper.py` tracks a hardcoded list of
-  ten `PLAYER_IDS`.
-
-### Not on the main path
-
-`nba_analytics/`, `commercialization/`, and several modules under `models/`
-(`calibration`, `conformal`, `plc_priors`, `shin_devig`, `lineup_uncertainty`)
-are tested but are not imported by any pipeline entry point. Treat them as a
-library rather than as part of the running system.
-
-## 1. Setup
-
-You need Git and Python 3.11.
+## Quick start
 
 ```bash
 git clone https://github.com/johnshun001/nba-props.git
 cd nba-props
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
+python3.11 -m venv .venv && source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-# Optional PyTorch quantile member (used automatically when installed)
-python -m pip install -r requirements-torch.txt
 python setup_env.py
+python -m pytest -q          # expect: 237 passed
 ```
 
-On Windows PowerShell, replace the activation command with:
+That gets you a verified install and an empty local database. To collect data and
+train, continue to [02_Run](02_Run/).
 
-```powershell
-.venv\Scripts\Activate.ps1
+## How it works
+
+```mermaid
+flowchart TD
+    A["nba_api<br/>game logs, schedule"] --> C
+    B["The Odds API<br/>player prop lines"] --> C
+    C["raw_api_responses<br/>immutable source JSON"] --> D
+
+    D["storage/materialize.py<br/>parse + reproducibility hash"] --> E
+    D --> F
+    E["player_game_features<br/>player_results"] --> G
+    F["prop_lines"] --> M
+
+    M["storage/event_mapping.py<br/>teams + tip window"] --> G
+
+    G["features/pregame_features.py<br/>every stat shift(1)-ed<br/>context via backward merge_asof"] --> H
+
+    H["models/train.py<br/>chronological split<br/>train to val to calib to test"] --> I
+
+    I["Pooled ensemble<br/>LightGBM quantiles · XGBoost<br/>Quantile forest · Torch"] --> J
+
+    J["q10 / q25 / median / q75 / q90<br/>plus conformal intervals"] --> K
+
+    K{"calibration READY?"} -->|no| X["NOT_READY<br/>no bets emitted"]
+    K -->|yes| L["execution/betting.py<br/>no-vig · EV line shopping<br/>fractional Kelly · exposure caps"]
+
+    L --> N["analysis/replay.py<br/>walk-forward settlement"]
+    L --> O["execution/shadow_tracker.py<br/>paper trading, never wagers"]
+
+    style X fill:#4a1518,stroke:#b3222b,color:#fff
+    style K fill:#4a3a10,stroke:#b8860b,color:#fff
+    style I fill:#12304a,stroke:#1f6feb,color:#fff
 ```
 
-The final setup command creates a fresh local database at `data/raw.db`.
+**Three ideas carry the design:**
 
-For a plain-English map of what each file and folder is for, see
-[`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md).
+| Idea | Where | What it means |
+|---|---|---|
+| **No leakage** | [`features/pregame_features.py`](features/pregame_features.py) | Every rolling stat is `shift(1)`-ed *before* its window. Context joins use a backward `merge_asof` on `prediction_time`, so a lineup update published after the forecast cannot reach back. Same-game actual minutes are never an input. |
+| **Ordered splits** | [`models/ensemble.py`](models/ensemble.py) | Train, validation, calibration, and test are disjoint and strictly chronological — never a random shuffle. Test data is untouched until final scoring. |
+| **Fail closed** | [`execution/`](execution/) | Insufficient evidence produces `NOT_READY`, never a default guess. Promotion requires passing both a CLV gate and a calibration gate. |
 
-### Optional: sportsbook odds
+## Results
 
-NBA statistics use the public `nba_api` package. Sportsbook odds require a key
-from [The Odds API](https://the-odds-api.com/).
+Pooled ensemble on a held-out, strictly-later test period (`2025-02-24` to `2025-04-13`).
+Reproduce with `python -m models.train`.
 
-```bash
-export ODDS_API_KEY="your-key-here"
-```
+| Stat | Test MAE | Test RMSE | Validation MAE |
+|---|---|---|---|
+| Points | **7.28** | 9.11 | 7.35 |
+| Rebounds | **2.15** | 2.71 | 1.99 |
+| Assists | **1.82** | 2.42 | 2.03 |
 
-Each user must supply their own key. Never commit it to Git.
+Test and validation scores track closely, which is the signal you want — no large
+gap means no meaningful overfit to the validation period.
 
-## 2. Run
+Probability calibration is **not fit** on the current dataset, so reported
+over/under probabilities are uncalibrated and no betting metrics (ROI, CLV,
+win rate) exist yet.
 
-Always run commands from the repository root with the virtual environment
-activated.
+## Project status
 
-### Check that everything works
+Last verified 2026-09-08 against 10 tracked players, 2,186 player-game rows,
+and 5,919 sportsbook lines.
 
-```bash
-python -m pytest -q
-```
+### Working
 
-Expected result: `237 passed`.
+| Component | Evidence |
+|---|---|
+| Ingestion to materialization | 2,186 feature rows, 1,093 results, 5,919 lines parsed with deterministic hashes |
+| Event mapping | Matches on normalized teams plus a two-hour tip window; rejects ambiguous matches |
+| Leakage-free features | 44/44 feature columns build; `shift(1)` verified on every rolling stat |
+| Ensemble training | All four members fit, including the optional Torch quantile model |
+| Prediction CLI | `models.predict` returns monotone quantiles and sane values on real rows |
+| Selection and staking | No-vig conversion, both sides evaluated, deterministic EV tiebreaks, Kelly under caps |
+| Execution controls | `health_check`, `close_spec`, `settlement_engine`, `drift_monitor` all run correctly |
+| Tests | 237 passing in CI |
 
-### Configure the pipeline
+### Blocked
 
-`config/pipeline.json` is the single source for seasons, statistics, rolling
-windows, thresholds, feature/data/model versions, exposure caps, and
-project-relative artifact paths.
+These are **data coverage** problems, not modeling problems. Each gate fails
+closed rather than emitting an unsupported bet.
 
-### Collect and prepare data
+| Blocker | Cause | Effect |
+|---|---|---|
+| Name joins drop players | `player_lookup` stores `Luka Dončić`; the odds feed returns `Luka Doncic`. The `lower(trim(...))` joins do not fold diacritics. | Matching rows silently vanish in three modules |
+| Tip times unrecoverable | `schedule_scraper` reads `GAME_STATUS_TEXT`, which becomes `Final` or `1st Qtr` after tipoff and no longer parses. Event mapping requires a non-null `tip_time_utc`. | A game collected late can never be mapped — **collect the schedule before tipoff** |
+| Calibration unfit | Too few lined rows reach the calibration window (downstream of the two above) | `calibration_status = NOT_READY`; replay and shadow emit zero bets |
+| Narrow coverage | `scrapers/nba_scraper.py` tracks a hardcoded list of ten `PLAYER_IDS` | Small sample |
+
+### Not on the main path
+
+`nba_analytics/`, `commercialization/`, and several `models/` modules
+(`calibration`, `conformal`, `plc_priors`, `shin_devig`, `lineup_uncertainty`)
+are tested but imported by no pipeline entry point. Treat them as a library, not
+as part of the running system.
+
+## Full pipeline
 
 ```bash
 export NBA_SEASON="2024-25"
+
+# 1. Collect  (schedule must be scraped BEFORE tipoff)
 python -m scrapers.nba_scraper
 python -m storage.player_lookup
 python -m scrapers.schedule_scraper
-python -m scrapers.context_scraper --season 2024-25
+python -m scrapers.odds_scraper          # needs ODDS_API_KEY
+
+# 2. Materialize and build features
 python -m storage.materialize
 python -m features.pregame_features
-```
 
-Sportsbook odds are optional and require `ODDS_API_KEY`:
-
-```bash
-python -m scrapers.odds_scraper
-python -m storage.materialize
-```
-
-Historical sportsbook snapshots use an explicit timestamp:
-
-```bash
-python -m scrapers.odds_scraper --historical-date 2025-01-15T23:00:00Z
-python -m storage.materialize
-```
-
-Timestamped lineup, injury/availability, and opponent-by-position feeds can be
-loaded from provider-neutral JSON:
-
-```bash
-python -m scrapers.context_scraper \
-  --lineups-json data/import/lineups.json \
-  --availability-json data/import/availability.json \
-  --position-defense-json data/import/position-defense.json
-```
-
-To collect the additional historical season configured in the project:
-
-```bash
-python -m scripts.ingest_historical
-```
-
-### Train the models
-
-Run these after data collection:
-
-```bash
-python -m features.pregame_features
+# 3. Train and predict
 python -m models.train
-```
+python -m models.predict data/slate.parquet --output data/predictions.parquet
 
-The pooled points, rebounds, and assists models use LightGBM quantiles,
-XGBoost regression, the quantile-forest benchmark, and—when installed—a small
-PyTorch joint-quantile model. Training uses ordered, disjoint train,
-validation, calibration, and untouched test periods. Same-game actual minutes
-are never model inputs; expected minutes, DNP/role probabilities, and minutes
-uncertainty come directly from the pregame HMM path.
-
-### Generate predictions
-
-Pass CSV or Parquet pregame rows containing the stored feature columns plus
-`stat` and `sportsbook_line`:
-
-```bash
-python -m models.predict data/prediction_slate.parquet \
-  --output data/predictions.parquet
-```
-
-Output includes q10/q25/median/q75/q90, calibrated over/under probabilities,
-and conformal intervals fit on held-out residuals.
-
-### Replay historical sportsbook decisions
-
-```bash
+# 4. Evaluate
 python -m analysis.replay
-```
-
-Replay requires paired snapshots mapped to the correct NBA event and settles
-against actual player results. It reports MAE, RMSE, direction accuracy, Brier
-score, log loss, calibration error, two-sided win rate, ROI after vig, CLV,
-maximum drawdown, and breakdowns by player/stat/edge/book. It never substitutes
-a simulated rolling-average line. Replay prints `NOT_READY` and exits when those
-preconditions are unmet; see [Known gaps](#known-gaps).
-
-### Run the reports and checks
-
-```bash
-python -m tests.backtest
 python -m execution.health_check
-python -m execution.shadow_tracker run
-python -m execution.close_spec
-python -m execution.close_spec settle
-python -m execution.settlement_engine
 python -m execution.drift_monitor
 ```
 
-Some execution checks need schedule, odds, and shadow-prediction records in the
-local database. If that data does not exist yet, the command will report that
-there is nothing to evaluate.
+Full command reference and options: [02_Run](02_Run/).
 
-Shadow mode shops both OVER and UNDER opportunities, uses calibrated
-probabilities and fractional Kelly, and caps player/game/correlated exposure.
-Fewer than 100 properly settled forecasts—or missing CLV/calibration evidence—
-returns `NOT_READY`. Promotion requires both the CLV and calibration gates.
-
-## 3. Results
-
-Commands print summaries in the terminal and save generated files locally:
-
-| Result | Location |
-| --- | --- |
-| Collected and materialized data | `data/raw.db` |
-| Walk-forward predictions | `data/replay_results.csv` |
-| Minutes models | `models/hmm_store/` |
-| Quantile-forest models | `models/qrf_store/` |
-| Teammate-shock models | `models/shock_store/` |
-| Calibration models | `models/calibration_store/` |
-| Pooled ensemble models + metadata | `models/ensemble_store/` |
-| Generated reports | `output/` and the relevant analytics folders |
-| Automated test history | [GitHub Actions](https://github.com/johnshun001/nba-props/actions) |
-
-These results are excluded from Git because they are generated, can be large,
-and may contain private operational data. To give a collaborator your exact
-current results, send the required database or model directories separately
-through a private file-sharing channel.
-
-Do not open pickle model files from untrusted sources.
-
-## Command summary
-
-| Goal | Command |
-| --- | --- |
-| Initialize the database | `python setup_env.py` |
-| Verify the installation | `python -m pytest -q` |
-| Collect player game logs | `python -m scrapers.nba_scraper` |
-| Collect sportsbook odds | `python -m scrapers.odds_scraper` |
-| Build raw result/odds tables | `python -m storage.materialize` |
-| Build versioned pregame features | `python -m features.pregame_features` |
-| Train minutes models | `python -m models.hmm_minutes` |
-| Train pooled prop models | `python -m models.train` |
-| Predict a slate | `python -m models.predict data/prediction_slate.parquet` |
-| Generate replay results | `python -m analysis.replay` |
-| Run shadow mode | `python -m execution.shadow_tracker run` |
-| Run historical backtest | `python -m tests.backtest` |
-
-## Project folders
+## Repository map
 
 | Folder | Purpose |
-| --- | --- |
-| `scrapers/` | NBA schedule, game-log, and sportsbook collection |
-| `storage/` | Database setup, materialization, and bet tracking |
-| `models/` | Statistical and machine-learning models |
-| `features/` | Leakage-free pregame features and versioned feature storage |
-| `config/` | Central pipeline configuration and versions |
-| `analysis/` | Backtests, experiments, Monte Carlo, and attribution |
-| `execution/` | Health, close, settlement, shadow, and drift controls |
-| `nba_analytics/` | Market-efficiency and performance research |
-| `commercialization/` | Track-record, signal, and research utilities |
-| `schemas/` | Pydantic validation models |
-| `tests/` | Automated tests and offline replay tools |
+|---|---|
+| [`config/`](config/) | `pipeline.json` — single source for versions, splits, thresholds, paths |
+| [`scrapers/`](scrapers/) | NBA game logs, schedule, sportsbook odds, context feeds |
+| [`storage/`](storage/) | Schemas, materialization, event mapping, bet tracking |
+| [`features/`](features/) | Leakage-free pregame feature construction |
+| [`models/`](models/) | Pooled ensemble, training, prediction, minutes HMM |
+| [`execution/`](execution/) | Selection, staking, health, settlement, drift controls |
+| [`analysis/`](analysis/) | Walk-forward replay, backtests, attribution |
+| [`tests/`](tests/) | 237 tests covering the pipeline |
+
+## Documentation
+
+| Guide | For |
+|---|---|
+| [01_Setup](01_Setup/) | Installing and verifying the project |
+| [02_Run](02_Run/) | Collecting data, training, running checks |
+| [03_Results](03_Results/) | Where generated outputs land and what to share |
+| [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) | Plain-English map of every file |
 
 ## Notes
 
-- Upstream NBA endpoints can throttle or change. If collection fails, wait
-  briefly, rerun it, and inspect the console output.
-- `execution/settlement_rules.csv` is version-controlled because the settlement
-  engine fails closed when a required rule is missing.
-- This is research software, not financial advice. Model output is uncertain;
-  comply with applicable laws and sportsbook rules.
+- **Data.** NBA statistics come from the public `nba_api` package. Sportsbook odds
+  need a key from [The Odds API](https://the-odds-api.com/) in `ODDS_API_KEY`.
+  Supply your own and never commit it.
+- **Generated files.** The local DuckDB database, trained model stores, and reports
+  are gitignored — they are rebuildable and may contain private operational data.
+- **Safety.** `execution/settlement_rules.csv` is version-controlled because the
+  settlement engine fails closed when a rule is missing. Do not load pickle model
+  files from untrusted sources.
+- **Disclaimer.** Research software, not financial advice. Model output is
+  uncertain. Comply with applicable laws and sportsbook terms.
