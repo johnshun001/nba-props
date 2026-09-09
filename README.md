@@ -5,7 +5,7 @@
 
 [![Tests](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml/badge.svg)](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![Tests](https://img.shields.io/badge/tests-270%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-276%20passing-brightgreen)
 ![Status](https://img.shields.io/badge/status-research-orange)
 
 A research pipeline that predicts full outcome **distributions** for NBA points,
@@ -30,11 +30,16 @@ cd nba-props
 python3.11 -m venv .venv && source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 python setup_env.py
-python -m pytest -q          # expect: 270 passed
+python -m pytest -q          # expect: 276 passed
 ```
 
 That gets you a verified install and an empty local database. To collect data and
 train, continue to [02_Run](02_Run/).
+
+Verified from a clean clone on 2026-09-08: install, `setup_env.py`, the full
+276-test suite, then collect → materialize → features → train → predict all
+complete without manual intervention. Stages run before their inputs exist
+report `NOT_READY` and name the command to run.
 
 ## How it works
 
@@ -112,7 +117,7 @@ across three seasons, and 5,919 sportsbook lines.
 | Prediction CLI | `models.predict` returns monotone quantiles and sane values on real rows |
 | Selection and staking | No-vig conversion, both sides evaluated, deterministic EV tiebreaks, Kelly under caps |
 | Execution controls | `health_check`, `close_spec`, `settlement_engine`, `drift_monitor` all run correctly |
-| Tests | 270 passing in CI |
+| Tests | 276 passing in CI |
 
 ### Blocked
 
@@ -187,7 +192,7 @@ Full command reference and options: [02_Run](02_Run/).
 | [`models/`](models/) | Pooled ensemble, training, prediction, minutes HMM |
 | [`execution/`](execution/) | Selection, staking, health, settlement, drift controls |
 | [`analysis/`](analysis/) | Walk-forward replay, backtests, attribution |
-| [`tests/`](tests/) | 270 tests covering the pipeline |
+| [`tests/`](tests/) | 276 tests covering the pipeline |
 
 ## Documentation
 

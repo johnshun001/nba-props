@@ -13,6 +13,7 @@ import pandas as pd
 from config import load_config, project_path
 from storage.dates import parse_game_dates
 from storage.name_matching import normalized_name_sql
+from storage.preflight import MissingPipelineData, require_tables
 from features.pregame_features import build_pregame_features
 from models.ensemble import SUPPORTED_STATS, train_pooled_ensemble
 from models.hmm_minutes import build_walk_forward_hmm_features
@@ -79,6 +80,7 @@ def attach_historical_sportsbook_lines(con, features: pd.DataFrame) -> pd.DataFr
 
 
 def load_training_frame(con) -> pd.DataFrame:
+    require_tables(con, ["player_game_features"])
     games = con.execute("""
         SELECT * EXCLUDE (row_rank) FROM (
             SELECT *, ROW_NUMBER() OVER (
@@ -190,6 +192,7 @@ def train_all(frame: pd.DataFrame, output_dir: str | Path | None = None) -> dict
 
 def train_live_hmms(con, minimum_games: int = 30) -> int:
     """Save one current HMM per player for the shadow inference path."""
+    require_tables(con, ["player_game_features"])
     games = con.execute("""
         SELECT player_id, game_id, minutes, game_date,
                ROW_NUMBER() OVER (PARTITION BY player_id, game_id ORDER BY asof_time DESC) row_rank
@@ -222,9 +225,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", type=Path, default=project_path("database"))
     parser.add_argument("--output-dir", type=Path, default=project_path("artifacts"))
     args = parser.parse_args(argv)
-    with duckdb.connect(str(args.db), read_only=True) as con:
-        hmm_count = train_live_hmms(con)
-        frame = load_training_frame(con)
+    try:
+        with duckdb.connect(str(args.db), read_only=True) as con:
+            hmm_count = train_live_hmms(con)
+            frame = load_training_frame(con)
+    except MissingPipelineData as error:
+        print(f"NOT_READY: {error}")
+        return 2
     paths = train_all(frame, args.output_dir)
     for stat, path in paths.items():
         print(f"{stat}: {path}")

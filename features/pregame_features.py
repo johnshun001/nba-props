@@ -348,9 +348,15 @@ def main() -> int:
     from config import project_path
     from models.train import load_training_frame
 
-    with duckdb.connect(str(project_path("database"))) as con:
-        frame = load_training_frame(con)
-        count = persist_feature_store(con, frame)
+    from storage.preflight import MissingPipelineData
+
+    try:
+        with duckdb.connect(str(project_path("database"))) as con:
+            frame = load_training_frame(con)
+            count = persist_feature_store(con, frame)
+    except MissingPipelineData as error:
+        print(f"NOT_READY: {error}")
+        return 2
     print(f"Stored {count} pregame feature rows")
     return 0
 
