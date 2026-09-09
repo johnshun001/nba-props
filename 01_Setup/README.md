@@ -11,8 +11,9 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements-torch.txt   # optional Torch quantile member
 python setup_env.py
-python -m pytest -q
+python -m pytest -q          # expect: 237 passed
 ```
 
 On Windows PowerShell, activate the environment with:
@@ -29,9 +30,10 @@ On Windows PowerShell, activate the environment with:
 | `.env.example` | Template for optional secrets such as `ODDS_API_KEY`. |
 | `requirements.txt` | Runtime dependencies. |
 | `requirements-dev.txt` | Runtime plus test dependencies. |
+| `requirements-torch.txt` | Optional PyTorch quantile member, used automatically when installed. |
 | `pyproject.toml` | Build and package metadata. |
 | `pytest.ini` | Test configuration. |
-| `setup_env.py` | Creates local folders and initializes `data/raw.db`. |
+| `setup_env.py` | Creates local folders and initializes the DuckDB database at `data/raw.db`. |
 | `.github/workflows/tests.yml` | GitHub Actions test workflow. |
 
 The setup step creates local generated files. Those are ignored by Git and can
