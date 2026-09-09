@@ -36,12 +36,12 @@ def check_game_coverage(con, today_str):
     scraped = con.execute("""
         SELECT COUNT(DISTINCT gs.game_id)
         FROM game_schedule gs
+        JOIN event_game_map mapping ON mapping.game_id = gs.game_id
+        JOIN prop_lines pl ON pl.event_id = mapping.event_id
         WHERE gs.game_date_et = ?
-          AND EXISTS (
-              SELECT 1 FROM prop_lines pl
-              WHERE pl.asof_time >= CAST(? AS TIMESTAMP)
-                AND pl.asof_time <  CAST(? AS TIMESTAMP)
-          )
+          AND pl.asof_time >= CAST(? AS TIMESTAMP)
+          AND pl.asof_time <  CAST(? AS TIMESTAMP)
+          AND pl.over_price IS NOT NULL AND pl.under_price IS NOT NULL
     """, [
         today_str,
         f"{today_str} 00:00:00",
@@ -85,7 +85,7 @@ def check_null_rate(con, today_str):
     """, [f"{today_str} 00:00:00"]).fetchone()[0]
 
     if total == 0:
-        print(f"  null_rate: no rows scraped today")
+        print("  null_rate: no rows scraped today")
         return None
 
     bad = con.execute("""
@@ -112,7 +112,7 @@ def run_health_check(con=None):
     print(f"\n=== ScrapingHealthCheck {today_str} ===\n")
 
     game_cov  = check_game_coverage(con, today_str)
-    prop_cov  = check_prop_coverage(con, today_str)
+    check_prop_coverage(con, today_str)
     null_rate = check_null_rate(con, today_str)
 
     print()

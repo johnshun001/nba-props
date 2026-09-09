@@ -1,7 +1,6 @@
 import os
 import sys
 import pickle
-import subprocess
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
@@ -11,24 +10,7 @@ import pandas as pd
 import duckdb
 from scipy.stats import t as student_t
 
-
-def _ensure_quantile_forest() -> None:
-    try:
-        from quantile_forest import RandomForestQuantileRegressor  # noqa: F401
-        return
-    except Exception:
-        pass
-    cmd = [sys.executable, "-m", "pip", "install", "quantile-forest"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Failed to install quantile-forest (rc={proc.returncode}).\n"
-            f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
-        )
-
-
-_ensure_quantile_forest()
-from quantile_forest import RandomForestQuantileRegressor  # noqa: E402
+from quantile_forest import RandomForestQuantileRegressor
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH      = str(PROJECT_ROOT / "data" / "raw.db")

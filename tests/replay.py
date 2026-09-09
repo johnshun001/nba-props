@@ -1,26 +1,23 @@
 """
-Walk-forward replay: for each game G, train HMM+QRF strictly on data
+Legacy synthetic benchmark: for each game G, train HMM+QRF strictly on data
 before G, simulate the book line as rolling 10-game average, predict
 P(over), then compare to actual outcome.
 
+Production sportsbook replay lives in :mod:`analysis.replay`; this module is
+kept only as an offline synthetic regression test.
+
 Reports:
-  - Overall hit rate and calibration (ECE)
+  - Direction accuracy and calibration (ECE)
   - Minutes Variance Effect: low-minutes vs high-minutes games
 """
-import sys
 import os
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from pathlib import Path
-
-warnings.filterwarnings("ignore")  # suppress hmmlearn convergence warnings
 
 import duckdb
 import numpy as np
 import pandas as pd
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from models.hmm_minutes import (
     TruncatedStudentHMM,
@@ -41,6 +38,10 @@ from models.qrf_model import (
     FEATURE_COLS,
     QUANTILES,
 )
+
+warnings.filterwarnings("ignore")  # suppress hmmlearn convergence warnings
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DB_PATH       = str(PROJECT_ROOT / "data" / "raw.db")
 RESULTS_CSV   = str(PROJECT_ROOT / "data" / "replay_results.csv")
@@ -275,25 +276,26 @@ def print_replay_report(df: pd.DataFrame) -> None:
         return
 
     total_n   = int(len(df))
-    hit_rate  = float(df["outcome"].mean())
+    direction_correct = ((df["p_over"] >= 0.5).astype(int) == df["outcome"].astype(int))
+    direction_accuracy = float(direction_correct.mean())
     cal       = compute_calibration(df.to_dict("records"))
     ece       = cal.get("ece")
 
     print("=== Walk-Forward Replay Report ===\n")
     print(f"Total predictions : {total_n}")
-    print(f"Overall hit rate  : {hit_rate:.3f}")
+    print(f"Direction accuracy: {direction_accuracy:.3f}")
     print(f"ECE               : {f'{ece:.4f}' if ece is not None else 'N/A'}\n")
 
     # Per-stat summary
-    print(f"{'stat':<6} {'n':>6} {'hit':>6} {'ece':>7}")
+    print(f"{'stat':<6} {'n':>6} {'accuracy':>9} {'ece':>7}")
     print("-" * 28)
     for stat, g in df.groupby("stat"):
         stat_n    = int(len(g))
-        stat_hit  = float(g["outcome"].mean())
+        stat_hit  = float(((g["p_over"] >= 0.5).astype(int) == g["outcome"].astype(int)).mean())
         stat_cal  = compute_calibration(g.to_dict("records"))
         stat_ece  = stat_cal.get("ece")
         ece_str   = f"{stat_ece:.4f}" if stat_ece is not None else "   N/A"
-        print(f"{stat:<6} {stat_n:>6} {stat_hit:>6.3f} {ece_str:>7}")
+        print(f"{stat:<6} {stat_n:>6} {stat_hit:>9.3f} {ece_str:>7}")
 
     # Minutes Variance Effect
     print("\n--- Minutes Variance Effect ---")
@@ -306,21 +308,22 @@ def print_replay_report(df: pd.DataFrame) -> None:
         if grp.empty:
             print(f"{label}: no data")
             continue
-        g_hit = float(grp["outcome"].mean())
+        g_hit = float(((grp["p_over"] >= 0.5).astype(int) == grp["outcome"].astype(int)).mean())
         g_n   = int(len(grp))
         print(f"{label}")
-        print(f"  n={g_n}  hit_rate={g_hit:.3f}\n")
+        print(f"  n={g_n}  direction_accuracy={g_hit:.3f}\n")
 
     # Per-player summary (top 20 by n)
+    player_frame = df.assign(direction_correct=((df["p_over"] >= 0.5).astype(int) == df["outcome"].astype(int)))
     player_stats = (
-        df.groupby(["player_name", "stat"])
-        .agg(n=("outcome", "count"), hit=("outcome", "mean"))
+        player_frame.groupby(["player_name", "stat"])
+        .agg(n=("outcome", "count"), hit=("direction_correct", "mean"))
         .reset_index()
         .sort_values(["n", "hit"], ascending=[False, False])
         .head(20)
     )
     print("--- Top Players by Prediction Count ---\n")
-    print(f"{'player':<24} {'stat':<5} {'n':>5} {'hit':>6}")
+    print(f"{'player':<24} {'stat':<5} {'n':>5} {'accuracy':>9}")
     print("-" * 42)
     for _, row in player_stats.iterrows():
         print(f"{str(row['player_name'])[:24]:<24} {row['stat']:<5} {int(row['n']):>5} {float(row['hit']):>6.3f}")

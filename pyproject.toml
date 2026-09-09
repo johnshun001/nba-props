@@ -17,7 +17,9 @@ dependencies = {file = ["requirements.txt"]}
 include = [
   "analysis*",
   "commercialization*",
+  "config*",
   "execution*",
+  "features*",
   "models*",
   "nba_analytics*",
   "schemas*",
@@ -28,3 +30,4 @@ include = [
 
 [tool.setuptools.package-data]
 execution = ["settlement_rules.csv"]
+config = ["pipeline.json"]

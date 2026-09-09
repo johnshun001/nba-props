@@ -7,31 +7,45 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from config import load_config, project_path
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-DB_PATH             = str(PROJECT_ROOT / "data" / "raw.db")
+DB_PATH             = str(project_path("database"))
 CLV_WINDOW_DAYS     = 30
-CLV_STOP_THRESHOLD  = -0.01
-ECE_STOP_THRESHOLD  = 0.05
-MIN_SETTLED_BETS    = 20
+CLV_STOP_THRESHOLD  = float(load_config()["thresholds"]["clv_stop_threshold"])
+ECE_STOP_THRESHOLD  = float(load_config()["thresholds"]["maximum_ece"])
+MIN_SETTLED_BETS    = int(load_config()["thresholds"]["minimum_drift_settlements"])
 N_CALIBRATION_BINS  = 10
-PROMOTION_MIN_BETS  = 100
-PROMOTION_CLV_GATE  = 0.01
+PROMOTION_MIN_BETS  = int(load_config()["thresholds"]["minimum_shadow_settlements"])
+PROMOTION_CLV_GATE  = float(load_config()["thresholds"]["minimum_mean_clv"])
 
 
 def load_settled_predictions(con, window_days: int = 30) -> pd.DataFrame:
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=int(window_days))
     try:
         df = con.execute(
-            "SELECT qrf_p_over, signal, clv, edge, created_at "
-            "FROM shadow_predictions WHERE settled = TRUE AND created_at >= ?",
+            "SELECT CASE WHEN side = 'UNDER' "
+            "THEN 1.0 - COALESCE(calibrated_p_over, qrf_p_over) "
+            "ELSE COALESCE(calibrated_p_over, qrf_p_over) END AS model_probability, "
+            "COALESCE(calibrated_p_over, qrf_p_over) AS calibrated_p_over, "
+            "side, signal, clv, edge, outcome, created_at "
+            "FROM shadow_predictions WHERE settled = TRUE AND created_at >= ? "
+            "AND signal IN ('OVER', 'UNDER') AND calibration_status = 'READY' "
+            "AND clv IS NOT NULL AND outcome IS NOT NULL",
             [cutoff],
         ).fetchdf()
     except Exception:
-        return pd.DataFrame(columns=["qrf_p_over", "signal", "clv", "edge", "created_at"])
+        return pd.DataFrame(columns=[
+            "model_probability", "calibrated_p_over", "side", "signal",
+            "clv", "edge", "outcome", "created_at",
+        ])
     if df is None or df.empty:
-        return pd.DataFrame(columns=["qrf_p_over", "signal", "clv", "edge", "created_at"])
+        return pd.DataFrame(columns=[
+            "model_probability", "calibrated_p_over", "side", "signal",
+            "clv", "edge", "outcome", "created_at",
+        ])
     return df
 
 
@@ -40,7 +54,7 @@ def compute_promotion_gate(con) -> Dict[str, Any]:
     Shadow mode promotion gate.
     Queries shadow_predictions for all settled rows with CLV not null.
     Returns:
-      status: "ELIGIBLE" | "NOT_ELIGIBLE" | "INSUFFICIENT_DATA"
+      status: "ELIGIBLE" | "NOT_ELIGIBLE" | "NOT_READY"
       n_settled: int
       mean_clv: float or None
       min_bets_required: int
@@ -48,12 +62,17 @@ def compute_promotion_gate(con) -> Dict[str, Any]:
     """
     try:
         rows = con.execute(
-            "SELECT clv FROM shadow_predictions WHERE settled = TRUE AND clv IS NOT NULL"
+            "SELECT clv, CASE WHEN side = 'UNDER' "
+            "THEN 1.0 - COALESCE(calibrated_p_over, qrf_p_over) "
+            "ELSE COALESCE(calibrated_p_over, qrf_p_over) END, outcome "
+            "FROM shadow_predictions WHERE settled = TRUE AND clv IS NOT NULL "
+            "AND outcome IS NOT NULL AND signal IN ('OVER', 'UNDER') "
+            "AND calibration_status = 'READY'"
         ).fetchall()
         n = int(len(rows))
         if n < int(PROMOTION_MIN_BETS):
             return {
-                "status":            "INSUFFICIENT_DATA",
+                "status":            "NOT_READY",
                 "n_settled":         n,
                 "mean_clv":          None,
                 "min_bets_required": int(PROMOTION_MIN_BETS),
@@ -67,28 +86,35 @@ def compute_promotion_gate(con) -> Dict[str, Any]:
                 continue
         if not vals:
             return {
-                "status":            "INSUFFICIENT_DATA",
+                "status":            "NOT_READY",
                 "n_settled":         0,
                 "mean_clv":          None,
                 "min_bets_required": int(PROMOTION_MIN_BETS),
                 "clv_threshold":     float(PROMOTION_CLV_GATE),
             }
         mean_clv = float(np.mean(np.asarray(vals, dtype=float)))
-        status   = (
-            "ELIGIBLE"
-            if (n >= int(PROMOTION_MIN_BETS) and mean_clv > float(PROMOTION_CLV_GATE))
-            else "NOT_ELIGIBLE"
-        )
+        probabilities = np.asarray([float(r[1]) for r in rows], dtype=float)
+        outcomes = np.asarray([float(r[2]) for r in rows], dtype=float)
+        calibration = compute_ece(pd.DataFrame({
+            "clv": np.ones(n), "calibrated_p_over": probabilities, "outcome": outcomes,
+        }))
+        status = "ELIGIBLE" if (
+            n >= int(PROMOTION_MIN_BETS)
+            and mean_clv > float(PROMOTION_CLV_GATE)
+            and calibration.get("status") == "OK"
+        ) else "NOT_ELIGIBLE"
         return {
             "status":            status,
             "n_settled":         n,
             "mean_clv":          mean_clv,
+            "calibration_error": calibration.get("ece"),
+            "calibration_status": calibration.get("status"),
             "min_bets_required": int(PROMOTION_MIN_BETS),
             "clv_threshold":     float(PROMOTION_CLV_GATE),
         }
     except Exception:
         return {
-            "status":            "INSUFFICIENT_DATA",
+            "status":            "NOT_READY",
             "n_settled":         0,
             "mean_clv":          None,
             "min_bets_required": int(PROMOTION_MIN_BETS),
@@ -98,10 +124,10 @@ def compute_promotion_gate(con) -> Dict[str, Any]:
 
 def compute_rolling_clv(df: pd.DataFrame) -> Dict[str, Any]:
     if df is None or df.empty or int(df.shape[0]) < MIN_SETTLED_BETS:
-        return {"status": "INSUFFICIENT_DATA", "mean_clv": None, "n": 0}
+        return {"status": "NOT_READY", "mean_clv": None, "n": 0}
     d = df[df["clv"].notna()].copy()
     if d.empty or int(d.shape[0]) < MIN_SETTLED_BETS:
-        return {"status": "INSUFFICIENT_DATA", "mean_clv": None, "n": int(d.shape[0])}
+        return {"status": "NOT_READY", "mean_clv": None, "n": int(d.shape[0])}
     mean_clv = float(pd.to_numeric(d["clv"], errors="coerce").mean())
     gate     = "STOP" if mean_clv < float(CLV_STOP_THRESHOLD) else "OK"
     return {
@@ -113,29 +139,33 @@ def compute_rolling_clv(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def compute_ece(df: pd.DataFrame, n_bins: int = 10) -> Dict[str, Any]:
-    insuf = {"ece": None, "status": "INSUFFICIENT_DATA",
+    insuf = {"ece": None, "status": "NOT_READY",
              "n_bins_used": 0, "threshold": float(ECE_STOP_THRESHOLD)}
     n_bins = int(n_bins)
     if df is None or df.empty:
         return insuf
-    if "clv" not in df.columns or "qrf_p_over" not in df.columns:
+    probability_column = (
+        "model_probability" if "model_probability" in df.columns
+        else ("calibrated_p_over" if "calibrated_p_over" in df.columns else "qrf_p_over")
+    )
+    if "clv" not in df.columns or probability_column not in df.columns or "outcome" not in df.columns:
         return insuf
     d = df[df["clv"].notna()].copy()
     if d.empty or int(d.shape[0]) < MIN_SETTLED_BETS:
         return insuf
-    d["qrf_p_over"] = pd.to_numeric(d["qrf_p_over"], errors="coerce")
-    d = d[d["qrf_p_over"].notna()].copy()
+    d[probability_column] = pd.to_numeric(d[probability_column], errors="coerce")
+    d["outcome"] = pd.to_numeric(d["outcome"], errors="coerce")
+    d = d[d[probability_column].notna() & d["outcome"].notna()].copy()
     if d.empty:
         return insuf
 
-    d["qrf_p_over"] = d["qrf_p_over"].clip(lower=0.0, upper=1.0)
-    d["outcome"]    = (pd.to_numeric(d["clv"], errors="coerce") > 0.0).astype(int)
+    d[probability_column] = d[probability_column].clip(lower=0.0, upper=1.0)
     total_n         = int(d.shape[0])
     if total_n <= 0:
         return insuf
 
     edges     = np.linspace(0.0, 1.0, n_bins + 1)
-    p         = d["qrf_p_over"].to_numpy(dtype=float)
+    p         = d[probability_column].to_numpy(dtype=float)
     y         = d["outcome"].to_numpy(dtype=float)
     ece       = 0.0
     bins_used = 0
@@ -166,11 +196,14 @@ def check_all_gates(con) -> Dict[str, Any]:
     clv_result   = compute_rolling_clv(df)
     ece_result   = compute_ece(df, n_bins=N_CALIBRATION_BINS)
     promo_result = compute_promotion_gate(con)
-    overall      = (
-        "STOP"
-        if clv_result.get("status") == "STOP" or ece_result.get("status") == "STOP"
-        else "OK"
-    )
+    statuses = {clv_result.get("status"), ece_result.get("status")}
+    promotion_status = promo_result.get("status")
+    if "STOP" in statuses or promotion_status == "NOT_ELIGIBLE":
+        overall = "STOP"
+    elif "NOT_READY" in statuses or promotion_status != "ELIGIBLE":
+        overall = "NOT_READY"
+    else:
+        overall = "OK"
     return {
         "overall":    overall,
         "clv":        clv_result,
@@ -228,7 +261,7 @@ def main() -> int:
     try:
         result = check_all_gates(con)
         print_drift_report(result)
-        return 1 if result.get("overall") == "STOP" else 0
+        return 0 if result.get("overall") == "OK" else (1 if result.get("overall") == "STOP" else 2)
     finally:
         try:
             con.close()

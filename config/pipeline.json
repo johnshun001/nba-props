@@ -1,0 +1,39 @@
+{
+  "seasons": ["2023-24", "2024-25", "2025-26"],
+  "statistics": {
+    "pts": "player_points",
+    "reb": "player_rebounds",
+    "ast": "player_assists"
+  },
+  "versions": {
+    "feature": "pregame-v1",
+    "data": "nba-odds-v1",
+    "model": "pooled-ensemble-v1"
+  },
+  "rolling_windows": [5, 10, 20],
+  "torch_quantile_if_available": true,
+  "splits": {
+    "validation_fraction": 0.15,
+    "calibration_fraction": 0.15,
+    "test_fraction": 0.15,
+    "minimum_training_rows": 100
+  },
+  "thresholds": {
+    "minimum_edge": 0.025,
+    "minimum_calibration_rows": 50,
+    "minimum_shadow_settlements": 100,
+    "minimum_drift_settlements": 20,
+    "maximum_ece": 0.05,
+    "minimum_mean_clv": 0.01,
+    "clv_stop_threshold": -0.01,
+    "kelly_fraction": 0.25,
+    "max_player_exposure": 0.02,
+    "max_game_exposure": 0.05,
+    "max_correlated_exposure": 0.03
+  },
+  "paths": {
+    "database": "data/raw.db",
+    "artifacts": "models/ensemble_store",
+    "replay_output": "data/replay_results.csv"
+  }
+}
