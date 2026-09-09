@@ -17,6 +17,8 @@ from features.pregame_features import build_pregame_features
 from models.ensemble import PooledPropEnsemble
 from models.hmm_minutes import predict_next_minutes
 from storage.event_mapping import nba_team_aliases, nba_team_ids
+from storage.dates import parse_game_dates
+from storage.name_matching import normalize_name_series
 
 
 SCHEMA = """
@@ -84,9 +86,9 @@ def load_prop_lines(con, prediction_time=None) -> pd.DataFrame:
 
 def _build_live_feature_rows(con, props: pd.DataFrame) -> pd.DataFrame:
     lookup = con.execute("SELECT player_id, full_name FROM player_lookup").fetchdf()
-    lookup["name_key"] = lookup["full_name"].str.strip().str.lower()
+    lookup["name_key"] = normalize_name_series(lookup["full_name"])
     props = props.copy()
-    props["name_key"] = props["player_name"].str.strip().str.lower()
+    props["name_key"] = normalize_name_series(props["player_name"])
     props = props.merge(lookup[["player_id", "name_key"]], on="name_key", how="inner")
     history = con.execute("""
         SELECT * EXCLUDE (row_rank) FROM (
@@ -97,7 +99,7 @@ def _build_live_feature_rows(con, props: pd.DataFrame) -> pd.DataFrame:
             FROM player_game_features
         ) WHERE row_rank = 1
     """).fetchdf()
-    history["prediction_time"] = pd.to_datetime(history["game_date"], utc=True, errors="coerce")
+    history["prediction_time"] = parse_game_dates(history["game_date"])
     table_names = {
         row[0] for row in con.execute("SELECT table_name FROM information_schema.tables").fetchall()
     }
@@ -119,7 +121,7 @@ def _build_live_feature_rows(con, props: pd.DataFrame) -> pd.DataFrame:
         tip_time = pd.to_datetime(prop["commence_time"], utc=True, errors="coerce")
         past = history[
             (history["player_id"] == prop["player_id"])
-            & (pd.to_datetime(history["game_date"], utc=True, errors="coerce") < tip_time)
+            & (parse_game_dates(history["game_date"]) < tip_time)
         ].sort_values("game_date")
         try:
             result = predict_next_minutes(int(prop["player_id"]), past["minutes"].dropna().to_numpy(dtype=float))

@@ -11,6 +11,7 @@ import duckdb
 from scipy.stats import t as student_t
 
 from quantile_forest import RandomForestQuantileRegressor
+from storage.dates import parse_game_dates
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH      = str(PROJECT_ROOT / "data" / "raw.db")
@@ -52,7 +53,7 @@ def _load_player_game_features(db_path: str = DB_PATH,
     for c in ["pts", "reb", "ast", "fga", "fgm", "fg3a", "tov", "plus_minus"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+    df["game_date"] = parse_game_dates(df["game_date"], utc=False)
     df = df.dropna(subset=["game_date"]).copy()
     df = df.sort_values(["player_id", "game_date"]).reset_index(drop=True)
     return df

@@ -27,6 +27,7 @@ from models.qrf_model import (
     _predict_quantiles,
     load_model_from_disk,
 )
+from storage.dates import parse_game_dates
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -114,7 +115,7 @@ def _load_player_stat_games(
 
     for column in ["minutes", "stat_val", "fga", "fg3a", "tov", "plus_minus"]:
         df[column] = pd.to_numeric(df[column], errors="coerce").astype(float)
-    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+    df["game_date"] = parse_game_dates(df["game_date"], utc=False)
     df = df.dropna(subset=["game_date", "minutes", "stat_val"])
     df = df.sort_values("game_date").reset_index(drop=True)
     df["game_date"] = df["game_date"].dt.strftime("%Y-%m-%d")

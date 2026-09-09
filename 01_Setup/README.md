@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
 python -m pip install -r requirements-torch.txt   # optional Torch quantile member
 python setup_env.py
-python -m pytest -q          # expect: 237 passed
+python -m pytest -q          # expect: 270 passed
 ```
 
 On Windows PowerShell, activate the environment with:

@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from config import load_config
+from storage.dates import parse_game_dates
 from storage.pipeline_schema import ensure_pipeline_schemas
 
 
@@ -138,7 +139,7 @@ def build_team_context(team_games: pd.DataFrame) -> pd.DataFrame:
     """Create pregame opponent pace/defense values from prior team games."""
     _require(team_games, ["team_id", "game_date", "pace", "def_rating"], "team_games")
     teams = team_games.copy()
-    teams["game_date"] = pd.to_datetime(teams["game_date"], utc=True, errors="coerce")
+    teams["game_date"] = parse_game_dates(teams["game_date"])
     teams = teams.sort_values(["team_id", "game_date"])
     grouped = teams.groupby("team_id", sort=False, group_keys=False)
     teams["opponent_pace"] = grouped["pace"].transform(
@@ -172,7 +173,7 @@ def build_pregame_features(
     config = load_config()
     version = feature_version or config["versions"]["feature"]
     frame = player_games.copy()
-    frame["game_date"] = pd.to_datetime(frame["game_date"], utc=True, errors="coerce")
+    frame["game_date"] = parse_game_dates(frame["game_date"])
     if "prediction_time" not in frame:
         frame["prediction_time"] = frame.get("tip_time_utc", frame["game_date"])
     frame["prediction_time"] = pd.to_datetime(frame["prediction_time"], utc=True, errors="coerce")

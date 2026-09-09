@@ -8,6 +8,7 @@ import duckdb
 from scipy.stats import t as student_t
 
 from hmmlearn import hmm
+from storage.dates import parse_game_dates
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH   = str(PROJECT_ROOT / "data" / "raw.db")
@@ -113,7 +114,7 @@ def load_player_minutes(con) -> pd.DataFrame:
     """).fetchdf()
     df["player_id"] = df["player_id"].astype(int)
     df["minutes"]   = df["minutes"].astype(float)
-    df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
+    df["game_date"] = parse_game_dates(df["game_date"], utc=False)
     df = df.dropna(subset=["game_date"]).copy()
     df = df.sort_values(["player_id", "game_date"]).reset_index(drop=True)
     return df
