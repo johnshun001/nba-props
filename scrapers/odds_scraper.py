@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import time
+import argparse
 from pathlib import Path
 import requests
 import duckdb
@@ -68,6 +69,21 @@ def fetch_events(api_key):
         print(f"Events fetch error: {e}")
         return []
 
+
+def fetch_historical_events(api_key, snapshot_time):
+    """Fetch the event slate as it existed at an ISO-8601 historical time."""
+    url = f"{BASE_URL}/historical/sports/{SPORT}/events"
+    try:
+        response = requests.get(url, params={"apiKey": api_key, "date": snapshot_time}, timeout=15)
+        if response.status_code != 200:
+            print(f"Historical events fetch failed: HTTP {response.status_code} — {response.text[:200]}")
+            return []
+        payload = response.json()
+        return payload.get("data", payload if isinstance(payload, list) else [])
+    except Exception as error:
+        print(f"Historical events fetch error: {error}")
+        return []
+
 def fetch_event_odds(api_key, event_id, con):
     url = f"{BASE_URL}/sports/{SPORT}/events/{event_id}/odds"
     hash_params = {"event_id": event_id, "regions": "us",
@@ -103,12 +119,40 @@ def fetch_event_odds(api_key, event_id, con):
                   "{}", 0, f"error: {e}")
         return 0, "?", "?"
 
-def main():
+
+def fetch_historical_event_odds(api_key, event_id, snapshot_time, con):
+    """Store an immutable historical player-prop snapshot in the raw layer."""
+    url = f"{BASE_URL}/historical/sports/{SPORT}/events/{event_id}/odds"
+    hash_params = {
+        "event_id": event_id, "date": snapshot_time, "regions": "us",
+        "markets": "player_points,player_rebounds,player_assists", "oddsFormat": "american",
+    }
+    params_hash = stable_params_hash(hash_params)
+    ingestion_ts = utc_now()
+    raw_id = make_raw_id(SOURCE, "event_odds", params_hash, ingestion_ts)
+    try:
+        response = requests.get(url, params={**hash_params, "apiKey": api_key}, timeout=15)
+        payload = response.json() if response.status_code == 200 else {}
+        event_payload = payload.get("data", payload)
+        if isinstance(event_payload, dict):
+            event_payload["_snapshot_time"] = payload.get("timestamp", snapshot_time)
+        status = "ok" if response.status_code == 200 else f"error: HTTP {response.status_code}"
+        insert_row(con, raw_id, "event_odds", params_hash, ingestion_ts,
+                   json.dumps(event_payload), response.status_code, status)
+        return len(event_payload.get("bookmakers", [])) if isinstance(event_payload, dict) else 0
+    except Exception as error:
+        insert_row(con, raw_id, "event_odds", params_hash, ingestion_ts, "{}", 0, f"error: {error}")
+        return 0
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Collect current or historical NBA prop snapshots")
+    parser.add_argument("--historical-date", help="ISO-8601 UTC snapshot time supported by The Odds API")
+    args = parser.parse_args(argv)
     api_key = get_api_key()
     con = connect_db()
 
     print("Fetching NBA events...")
-    events = fetch_events(api_key)
+    events = fetch_historical_events(api_key, args.historical_date) if args.historical_date else fetch_events(api_key)
     if not events:
         print("No events returned. Check your API key or there may be no games today.")
         return
@@ -123,7 +167,11 @@ def main():
         home = event.get("home_team", "?")
         away = event.get("away_team", "?")
 
-        n_markets, remaining, used = fetch_event_odds(api_key, event_id, con)
+        if args.historical_date:
+            n_markets = fetch_historical_event_odds(api_key, event_id, args.historical_date, con)
+            remaining, used = "?", "?"
+        else:
+            n_markets, remaining, used = fetch_event_odds(api_key, event_id, con)
         print(f"Scraped event {event_id[:8]}... {away} @ {home} — {n_markets} bookmakers found")
 
         if n_markets >= 0:

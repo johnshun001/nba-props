@@ -5,6 +5,10 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from config import load_config
+from storage.pipeline_schema import ensure_pipeline_schemas
+from storage.event_mapping import map_events_to_games
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = str(PROJECT_ROOT / "data" / "raw.db")
 
@@ -17,6 +21,12 @@ CREATE TABLE IF NOT EXISTS player_game_features (
     asof_time               TIMESTAMP NOT NULL,
     source_raw_id           VARCHAR NOT NULL,
     matchup                 VARCHAR,
+    team_id                 INTEGER,
+    opponent_id             INTEGER,
+    team_abbreviation       VARCHAR,
+    opponent_abbreviation   VARCHAR,
+    is_home                 BOOLEAN,
+    position                VARCHAR,
     wl                      VARCHAR,
     minutes                 FLOAT,
     pts                     FLOAT,
@@ -55,7 +65,7 @@ CREATE TABLE IF NOT EXISTS prop_lines (
 )
 """
 
-FEATURE_VERSION = "v1.0"
+FEATURE_VERSION = load_config()["versions"]["data"]
 
 
 def sha256_hex(s):
@@ -94,12 +104,19 @@ def connect_db():
 def ensure_schemas(con):
     con.execute(GAME_LOG_SCHEMA)
     con.execute(PROP_LINES_SCHEMA)
+    ensure_pipeline_schemas(con)
     try:
         con.execute(
             "ALTER TABLE player_game_features ADD COLUMN IF NOT EXISTS feature_hash VARCHAR"
         )
     except Exception:
         pass
+    for column, dtype in [
+        ("team_id", "INTEGER"), ("opponent_id", "INTEGER"),
+        ("team_abbreviation", "VARCHAR"), ("opponent_abbreviation", "VARCHAR"),
+        ("is_home", "BOOLEAN"), ("position", "VARCHAR"),
+    ]:
+        con.execute(f"ALTER TABLE player_game_features ADD COLUMN IF NOT EXISTS {column} {dtype}")
     print("OK: feature tables ready")
 
 
@@ -131,7 +148,11 @@ def parse_game_log_row(raw_id, ingestion_ts, payload_json, asof_time):
             try:
                 player_id  = int(row[h["Player_ID"]])
                 game_id    = str(row[h["Game_ID"]])
-                game_date  = str(row[h["GAME_DATE"]])
+                raw_game_date = str(row[h["GAME_DATE"]])
+                parsed_game_date = pd.to_datetime(raw_game_date, errors="raise")
+                game_date = parsed_game_date.strftime("%Y-%m-%d")
+                matchup = str(row[h.get("MATCHUP", 0)] or "")
+                matchup_parts = matchup.split()
                 feature_id = make_feature_id(player_id, game_id, FEATURE_VERSION, raw_id)
 
                 d = {
@@ -141,7 +162,13 @@ def parse_game_log_row(raw_id, ingestion_ts, payload_json, asof_time):
                     "game_date":       game_date,
                     "asof_time":       asof_time,
                     "source_raw_id":   raw_id,
-                    "matchup":         str(row[h.get("MATCHUP", 0)] or ""),
+                    "matchup":         matchup,
+                    "team_id":         int(row[h["TEAM_ID"]]) if "TEAM_ID" in h and row[h["TEAM_ID"]] is not None else None,
+                    "opponent_id":     None,
+                    "team_abbreviation": matchup_parts[0] if matchup_parts else None,
+                    "opponent_abbreviation": matchup_parts[-1] if matchup_parts else None,
+                    "is_home":         "@" not in matchup,
+                    "position":        None,
                     "wl":              str(row[h.get("WL", 0)] or ""),
                     "minutes":         float(row[h["MIN"]] or 0),
                     "pts":             float(row[h["PTS"]] or 0),
@@ -171,18 +198,37 @@ def insert_game_features(con, records):
     inserted = 0
     for r in records:
         try:
-            con.execute("""
-                INSERT OR IGNORE INTO player_game_features VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
+            inserted_row = con.execute("""
+                INSERT OR IGNORE INTO player_game_features (
+                    feature_id, player_id, game_id, game_date, asof_time,
+                    source_raw_id, matchup, team_id, opponent_id,
+                    team_abbreviation, opponent_abbreviation, is_home, position,
+                    wl, minutes, pts, reb, ast, stl, blk, fga, fgm, fg_pct,
+                    fg3a, fg3m, tov, plus_minus, feature_version, feature_hash
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ) RETURNING feature_id
             """, [
                 r["feature_id"], r["player_id"], r["game_id"], r["game_date"],
-                r["asof_time"], r["source_raw_id"], r["matchup"], r["wl"],
+                r["asof_time"], r["source_raw_id"], r["matchup"], r["team_id"],
+                r["opponent_id"], r["team_abbreviation"], r["opponent_abbreviation"],
+                r["is_home"], r["position"], r["wl"],
                 r["minutes"], r["pts"], r["reb"], r["ast"], r["stl"], r["blk"],
                 r["fga"], r["fgm"], r["fg_pct"], r["fg3a"], r["fg3m"],
                 r["tov"], r["plus_minus"], r["feature_version"], r["feature_hash"]
+            ]).fetchone()
+            con.execute("""
+                INSERT OR REPLACE INTO player_results (
+                    player_id, game_id, game_date, pts, reb, ast, minutes,
+                    source_raw_id, data_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                r["player_id"], r["game_id"], r["game_date"], r["pts"], r["reb"],
+                r["ast"], r["minutes"], r["source_raw_id"],
+                load_config()["versions"]["data"],
             ])
-            inserted += 1
+            inserted += int(inserted_row is not None)
         except Exception as e:
             print(f"  Insert failed for feature_id={r['feature_id'][:16]}...: {e}")
     return inserted
@@ -209,7 +255,9 @@ def parse_odds_row(raw_id, ingestion_ts, payload_json, asof_time):
         home_team     = data.get("home_team", "")
         away_team     = data.get("away_team", "")
         commence_time = data.get("commence_time", "")
+        snapshot_time = data.get("_snapshot_time") or ingestion_ts or asof_time
 
+        paired = {}
         for bookmaker in data.get("bookmakers", []):
             book_key = bookmaker.get("key", "")
             for market in bookmaker.get("markets", []):
@@ -221,14 +269,9 @@ def parse_odds_row(raw_id, ingestion_ts, payload_json, asof_time):
                     side        = outcome.get("name", "")
                     if line is None:
                         continue
-                    line_id     = make_feature_id(
-                        event_id, book_key, market_key,
-                        player_name, side, FEATURE_VERSION, raw_id
-                    )
-                    over_price  = price if side == "Over"  else None
-                    under_price = price if side == "Under" else None
-                    records.append({
-                        "line_id":         line_id,
+                    key = (event_id, book_key, market_key, player_name, float(line))
+                    record = paired.setdefault(key, {
+                        "line_id":         make_feature_id(*key, FEATURE_VERSION, raw_id),
                         "event_id":        event_id,
                         "home_team":       home_team,
                         "away_team":       away_team,
@@ -237,12 +280,20 @@ def parse_odds_row(raw_id, ingestion_ts, payload_json, asof_time):
                         "player_name":     player_name,
                         "market":          market_key,
                         "line":            float(line),
-                        "over_price":      int(over_price)  if over_price  is not None else None,
-                        "under_price":     int(under_price) if under_price is not None else None,
-                        "asof_time":       asof_time,
+                        "over_price":      None,
+                        "under_price":     None,
+                        "asof_time":       snapshot_time,
                         "source_raw_id":   raw_id,
                         "feature_version": FEATURE_VERSION,
                     })
+                    if side == "Over" and price is not None:
+                        record["over_price"] = int(price)
+                    elif side == "Under" and price is not None:
+                        record["under_price"] = int(price)
+        records.extend(
+            record for record in paired.values()
+            if record["over_price"] is not None and record["under_price"] is not None
+        )
     except Exception as e:
         print(f"  Failed to parse odds raw_id={raw_id[:16]}...: {e}")
     return records
@@ -252,17 +303,17 @@ def insert_prop_lines(con, records):
     inserted = 0
     for r in records:
         try:
-            con.execute("""
-                INSERT OR IGNORE INTO prop_lines VALUES (
+            inserted_row = con.execute("""
+                INSERT OR REPLACE INTO prop_lines VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
+                ) RETURNING line_id
             """, [
                 r["line_id"], r["event_id"], r["home_team"], r["away_team"],
                 r["commence_time"], r["bookmaker"], r["player_name"], r["market"],
                 r["line"], r["over_price"], r["under_price"], r["asof_time"],
                 r["source_raw_id"], r["feature_version"]
-            ])
-            inserted += 1
+            ]).fetchone()
+            inserted += int(inserted_row is not None)
         except Exception as e:
             print(f"  Insert failed for line_id={r['line_id'][:16]}...: {e}")
     return inserted
@@ -273,10 +324,10 @@ def print_summary(con):
     n_players = con.execute("SELECT COUNT(DISTINCT player_id) FROM player_game_features").fetchone()[0]
     n_lines   = con.execute("SELECT COUNT(*) FROM prop_lines").fetchone()[0]
     n_markets = con.execute("SELECT COUNT(DISTINCT market) FROM prop_lines").fetchone()[0]
-    print(f"\n--- Materialization Summary ---")
+    print("\n--- Materialization Summary ---")
     print(f"Game features:  {n_games} rows across {n_players} players")
     print(f"Prop lines:     {n_lines} rows across {n_markets} market types")
-    print(f"Layer 1 materialization complete.")
+    print("Layer 1 materialization complete.")
 
 
 def main():
@@ -300,6 +351,12 @@ def main():
         n       = insert_prop_lines(con, records)
         total_line_records += n
         print(f"  raw_id={raw_id[:16]}... -> {n} prop line rows inserted")
+
+    try:
+        mapped = map_events_to_games(con)
+        print(f"Mapped {mapped} sportsbook events to NBA game IDs")
+    except Exception as error:
+        print(f"Event mapping deferred: {error}")
 
     print_summary(con)
     con.close()

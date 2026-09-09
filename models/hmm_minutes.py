@@ -1,18 +1,13 @@
 import os
-import sys
 import pickle
-import subprocess
+import logging
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import duckdb
 from scipy.stats import t as student_t
 
-try:
-    from hmmlearn import hmm
-except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "hmmlearn"], check=True)
-    from hmmlearn import hmm
+from hmmlearn import hmm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH   = str(PROJECT_ROOT / "data" / "raw.db")
@@ -126,11 +121,11 @@ def load_player_minutes(con) -> pd.DataFrame:
 
 # ── fit / persist ──────────────────────────────────────────────────────────────
 
-def fit_hmm(minutes: np.ndarray) -> TruncatedStudentHMM:
+def fit_hmm(minutes: np.ndarray, n_iter: int = 200) -> TruncatedStudentHMM:
     model = TruncatedStudentHMM(
         n_components=N_STATES,
         covariance_type="full",
-        n_iter=200,
+        n_iter=int(n_iter),
         tol=1e-4,
         random_state=42,
     )
@@ -271,6 +266,74 @@ def predict_next_minutes(player_id: int, minutes: np.ndarray = None,
         "nu_per_state":         {STATE_LABELS[i]: float(model.nu_[i]) for i in range(N_STATES)},
         "lineup_prior_applied": bool(lineup_prior_applied),
     }
+
+
+def build_walk_forward_hmm_features(
+    games: pd.DataFrame,
+    *,
+    min_games: int = 30,
+    refit_every: int = 50,
+) -> pd.DataFrame:
+    """Generate HMM inputs using only games strictly before each row.
+
+    Models are pooled over each player's expanding history and periodically
+    refit for tractability. The current game's actual minutes are never passed
+    to the model that creates that game's feature row.
+    """
+    required = {"player_id", "game_id", "prediction_time", "minutes"}
+    missing = sorted(required.difference(games.columns))
+    if missing:
+        raise ValueError(f"games is missing HMM columns: {missing}")
+    ordered = games.copy()
+    ordered["prediction_time"] = pd.to_datetime(ordered["prediction_time"], utc=True, errors="coerce")
+    ordered = ordered.sort_values(["player_id", "prediction_time", "game_id"])
+    rows = []
+    for player_id, group in ordered.groupby("player_id", sort=False):
+        group = group.reset_index(drop=True)
+        fitted = None
+        fitted_at = -1
+        for index, game in group.iterrows():
+            history = pd.to_numeric(group.iloc[:index]["minutes"], errors="coerce").dropna().to_numpy(dtype=float)
+            probs = np.full(N_STATES, 1.0 / N_STATES, dtype=float)
+            means = np.asarray([0.0, 12.0, 24.0, 36.0], dtype=float)
+            if history.size >= int(min_games):
+                if fitted is None or index - fitted_at >= int(refit_every):
+                    try:
+                        hmm_logger = logging.getLogger("hmmlearn.base")
+                        previous_level = hmm_logger.level
+                        hmm_logger.setLevel(logging.ERROR)
+                        try:
+                            fitted = reorder_states(fit_hmm(history, n_iter=60))
+                        finally:
+                            hmm_logger.setLevel(previous_level)
+                        fitted_at = index
+                    except Exception:
+                        fitted = None
+                if fitted is not None:
+                    try:
+                        state = current_state(fitted, history)
+                        probs = next_game_probs(fitted, state)
+                        means = fitted.truncated_state_means()
+                    except Exception:
+                        fitted = None
+            if fitted is None and history.size:
+                exp_min = float(np.mean(history[-10:]))
+                uncertainty = float(np.std(history[-10:], ddof=0))
+            else:
+                exp_min = float(np.dot(probs, means))
+                uncertainty = float(np.sqrt(np.dot(probs, (means - exp_min) ** 2)))
+            rows.append({
+                "player_id": int(player_id),
+                "game_id": str(game["game_id"]),
+                "asof_time": game["prediction_time"],
+                "hmm_expected_minutes": exp_min,
+                "hmm_p_dnp": float(probs[0]),
+                "hmm_p_limited": float(probs[1]),
+                "hmm_p_rotation": float(probs[2]),
+                "hmm_p_featured": float(probs[3]),
+                "hmm_minutes_uncertainty": uncertainty,
+            })
+    return pd.DataFrame(rows)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

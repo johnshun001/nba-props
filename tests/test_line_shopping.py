@@ -1,6 +1,5 @@
 """Tests for line shopping: selects best available line."""
 
-import pytest
 import sys
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -32,22 +31,15 @@ def select_best_line(lines: List[Dict], bet_side: str = "over") -> Optional[Dict
         line_val = line['line']
         odds = line['over_odds'] if bet_side == "over" else line['under_odds']
 
-        # Convert American odds to implied probability
-        if odds > 0:
-            implied_prob = 100 / (odds + 100)
-        else:
-            implied_prob = abs(odds) / (abs(odds) + 100)
+        decimal_odds = 1 + (odds / 100 if odds > 0 else 100 / abs(odds))
 
-        # For line shopping, we want:
-        # - Over: highest line + best odds (highest implied prob)
-        # - Under: lowest line + best odds (highest implied prob)
+        # A lower threshold benefits an OVER; a higher threshold benefits an UNDER.
+        # Price breaks ties, with the larger decimal payout preferred.
 
         if bet_side == "over":
-            # Higher line is better, higher implied prob is better
-            value = line_val + (implied_prob * 10)  # Weight odds contribution
+            value = -line_val * 1000 + decimal_odds
         else:
-            # For under: lower line is better (so negate), higher implied prob is better
-            value = (50 - line_val) + (implied_prob * 10)  # 50 - line makes lower lines better
+            value = line_val * 1000 + decimal_odds
 
         if value > best_value:
             best_value = value
@@ -61,27 +53,27 @@ def calculate_line_shopping_value(selected_line: Dict, market_lines: List[Dict],
     """
     Calculate the value gained from line shopping.
 
-    Value = (selected_line - avg_line) for overs
-    Value = (avg_line - selected_line) for unders
+    Value = (avg_line - selected_line) for overs
+    Value = (selected_line - avg_line) for unders
 
     Returns value in points.
     """
     if not market_lines:
         return 0.0
 
-    avg_line = sum(l['line'] for l in market_lines) / len(market_lines)
+    avg_line = sum(item['line'] for item in market_lines) / len(market_lines)
 
     if bet_side == "over":
-        return selected_line['line'] - avg_line
-    else:
         return avg_line - selected_line['line']
+    else:
+        return selected_line['line'] - avg_line
 
 
 class TestLineShopping:
     """Tests for line shopping system."""
 
-    def test_selects_highest_line_for_over(self):
-        """For over bets, should select the highest line."""
+    def test_selects_lowest_line_for_over(self):
+        """For over bets, should select the lowest threshold."""
         lines = [
             {'sportsbook': 'draftkings', 'line': 24.5, 'over_odds': -110, 'under_odds': -110},
             {'sportsbook': 'fanduel', 'line': 25.5, 'over_odds': -110, 'under_odds': -110},
@@ -91,11 +83,11 @@ class TestLineShopping:
         best = select_best_line(lines, bet_side="over")
 
         assert best is not None
-        assert best['sportsbook'] == 'fanduel'
-        assert best['line'] == 25.5
+        assert best['sportsbook'] == 'betmgm'
+        assert best['line'] == 24.0
 
-    def test_selects_lowest_line_for_under(self):
-        """For under bets, should select the lowest line."""
+    def test_selects_highest_line_for_under(self):
+        """For under bets, should select the highest threshold."""
         lines = [
             {'sportsbook': 'draftkings', 'line': 24.5, 'over_odds': -110, 'under_odds': -110},
             {'sportsbook': 'fanduel', 'line': 25.5, 'over_odds': -110, 'under_odds': -110},
@@ -105,8 +97,8 @@ class TestLineShopping:
         best = select_best_line(lines, bet_side="under")
 
         assert best is not None
-        assert best['sportsbook'] == 'betmgm'
-        assert best['line'] == 24.0
+        assert best['sportsbook'] == 'fanduel'
+        assert best['line'] == 25.5
 
     def test_considers_odds_when_lines_equal(self):
         """When lines are equal, should select best odds."""
@@ -119,10 +111,7 @@ class TestLineShopping:
         best = select_best_line(lines, bet_side="over")
 
         assert best is not None
-        # The algorithm weights line + implied_prob*10
-        # -115 has highest implied prob (53.5%), so it wins
-        # This is correct behavior - the test expectation was wrong
-        assert best['over_odds'] == -115  # Highest implied probability wins
+        assert best['over_odds'] == -105  # Best payout at the same threshold
 
     def test_empty_lines_returns_none(self):
         """Empty lines list should return None."""
@@ -141,8 +130,7 @@ class TestLineShopping:
         best = select_best_line(market_lines, bet_side="over")
         value = calculate_line_shopping_value(best, market_lines, bet_side="over")
 
-        # Avg line = (24.5 + 25.5 + 24.0) / 3 = 24.67
-        # Value = 25.5 - 24.67 = 0.83
+        # Avg line = 24.67; selecting 24.0 makes an OVER easier by 0.67.
         assert value > 0
 
     def test_line_shopping_value_calculation(self):
@@ -155,7 +143,7 @@ class TestLineShopping:
         best = select_best_line(market_lines, bet_side="over")
         value = calculate_line_shopping_value(best, market_lines, bet_side="over")
 
-        # Avg = 21.0, Best = 22.0, Value = 1.0
+        # Avg = 21.0, Best = 20.0, Value = 1.0
         assert abs(value - 1.0) < 0.01
 
     def test_multiple_sportsbooks(self):
@@ -171,7 +159,7 @@ class TestLineShopping:
         best = select_best_line(lines, bet_side="over")
 
         assert best is not None
-        assert best['line'] == 25.5  # Highest line
+        assert best['line'] == 23.5  # Lowest OVER threshold
 
     def test_single_sportsbook(self):
         """Should work with single sportsbook."""
@@ -192,8 +180,8 @@ class TestLineShopping:
             {'sportsbook': 'betmgm', 'line': 26.5, 'over_odds': -110, 'under_odds': -110},
         ]
 
-        # Manually select worst line for over bet
-        worst = {'sportsbook': 'draftkings', 'line': 24.5, 'over_odds': -110, 'under_odds': -110}
+        # Manually select the highest (worst) line for an OVER bet.
+        worst = {'sportsbook': 'betmgm', 'line': 26.5, 'over_odds': -110, 'under_odds': -110}
         value = calculate_line_shopping_value(worst, market_lines, bet_side="over")
 
         # Avg = 25.5, Selected = 24.5, Value = -1.0
