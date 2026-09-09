@@ -8,6 +8,8 @@ import datetime
 import duckdb
 from pathlib import Path
 
+from storage.preflight import MissingPipelineData, require_tables
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = str(PROJECT_ROOT / "data" / "raw.db")
 
@@ -141,6 +143,12 @@ def run_health_check(con=None):
 
 def main():
     con = connect_db()
+    try:
+        require_tables(con, ["game_schedule", "raw_api_responses"])
+    except MissingPipelineData as error:
+        print(f"NOT_READY: {error}")
+        con.close()
+        return 2
     passed = run_health_check(con)
     con.close()
     return 0 if passed else 1
