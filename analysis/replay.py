@@ -16,6 +16,7 @@ from execution.betting import american_to_decimal, select_opportunities
 from features.pregame_features import apply_snapshot_context
 from models.ensemble import SUPPORTED_STATS, train_pooled_ensemble
 from models.train import load_training_frame
+from storage.name_matching import normalized_name_sql
 
 
 def _table_exists(con, table: str) -> bool:
@@ -172,15 +173,15 @@ def load_replay_frame(con) -> pd.DataFrame:
         SELECT COUNT(*) FROM information_schema.columns
         WHERE table_name = 'close_snapshots' AND column_name = 'event_id'
     """).fetchone()[0])
-    close_join = """
+    close_join = f"""
         LEFT JOIN (
-            SELECT event_id, lower(trim(player_name)) player_key, market, bookmaker,
+            SELECT event_id, {normalized_name_sql("player_name")} player_key, market, bookmaker,
                    arg_max(close_line, snapshot_ts) close_line
             FROM close_snapshots
             GROUP BY event_id, player_key, market, bookmaker
         ) closing
           ON closing.event_id = lines.event_id
-         AND closing.player_key = lower(trim(lines.player_name))
+         AND closing.player_key = {normalized_name_sql("lines.player_name")}
          AND closing.market = lines.market AND closing.bookmaker = lines.bookmaker
     """ if has_close else ""
     close_select = ", closing.close_line" if has_close else ", CAST(NULL AS FLOAT) AS close_line"
@@ -193,7 +194,8 @@ def load_replay_frame(con) -> pd.DataFrame:
                {close_select}
         FROM prop_lines lines
         JOIN event_game_map map ON map.event_id = lines.event_id
-        JOIN player_lookup lookup ON lower(trim(lookup.full_name)) = lower(trim(lines.player_name))
+        JOIN player_lookup lookup
+          ON {normalized_name_sql("lookup.full_name")} = {normalized_name_sql("lines.player_name")}
         {close_join}
         WHERE lines.over_price IS NOT NULL AND lines.under_price IS NOT NULL
           AND lines.market IN ('player_points', 'player_rebounds', 'player_assists')

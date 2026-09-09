@@ -29,8 +29,8 @@ def map_events_to_games(con, aliases: dict[str, str] | None = None) -> int:
         FROM prop_lines WHERE event_id IS NOT NULL
     """).fetchdf()
     schedule = con.execute("""
-        SELECT game_id, home_team, away_team, tip_time_utc FROM game_schedule
-        WHERE tip_time_utc IS NOT NULL
+        SELECT game_id, home_team, away_team, tip_time_utc, game_date_et
+        FROM game_schedule
     """).fetchdf()
     if events.empty or schedule.empty:
         return 0
@@ -40,18 +40,33 @@ def map_events_to_games(con, aliases: dict[str, str] | None = None) -> int:
     schedule["home_key"] = schedule["home_team"].astype(str).str.upper()
     schedule["away_key"] = schedule["away_team"].astype(str).str.upper()
     schedule["tip"] = pd.to_datetime(schedule["tip_time_utc"], utc=True, errors="coerce")
+    # A game scraped after tipoff has no parseable tip time, and that loss is
+    # permanent. Two given teams meet at most once on a calendar date, so the
+    # Eastern game date is an unambiguous fallback key.
+    schedule["date_key"] = pd.to_datetime(
+        schedule["game_date_et"], errors="coerce"
+    ).dt.date
+    events["date_key"] = events["tip"].dt.tz_convert("America/New_York").dt.date
     inserted = 0
     for event in events.itertuples():
-        candidates = schedule[
+        same_teams = schedule[
             (schedule["home_key"] == event.home_key)
             & (schedule["away_key"] == event.away_key)
-            & ((schedule["tip"] - event.tip).abs() <= pd.Timedelta(hours=2))
         ]
+        candidates = same_teams[
+            (same_teams["tip"] - event.tip).abs() <= pd.Timedelta(hours=2)
+        ]
+        source = "teams_and_tip"
+        if candidates.empty:
+            candidates = same_teams[
+                same_teams["tip"].isna() & (same_teams["date_key"] == event.date_key)
+            ]
+            source = "teams_and_date"
         if len(candidates) != 1:
             continue
         con.execute(
             "INSERT OR REPLACE INTO event_game_map VALUES (?, ?, ?, ?)",
-            [event.event_id, candidates.iloc[0]["game_id"], datetime.utcnow(), "teams_and_tip"],
+            [event.event_id, candidates.iloc[0]["game_id"], datetime.utcnow(), source],
         )
         inserted += 1
     return inserted

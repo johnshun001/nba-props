@@ -115,6 +115,15 @@ def insert_games(con, games, team_map):
                 tip_utc, close_utc, home_abbr, away_abbr,
                 g["home_team_id"], g["away_team_id"], now
             ])
+            # GAME_STATUS_TEXT degrades to 'Final'/'1st Qtr' once a game starts,
+            # so a first scrape after tipoff stores NULL. INSERT OR IGNORE would
+            # keep that NULL forever; backfill it if a parseable time shows up.
+            if tip_utc is not None:
+                con.execute("""
+                    UPDATE game_schedule
+                       SET tip_time_utc = ?, close_time_utc = ?, tip_time_et = ?
+                     WHERE game_id = ? AND tip_time_utc IS NULL
+                """, [tip_utc, close_utc, g["tip_time_str"], g["game_id"]])
             inserted += 1
         except Exception as e:
             print(f"  Insert failed for game_id={g['game_id']}: {e}")

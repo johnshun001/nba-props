@@ -5,7 +5,7 @@
 
 [![Tests](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml/badge.svg)](https://github.com/johnshun001/nba-props/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![Tests](https://img.shields.io/badge/tests-237%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-270%20passing-brightgreen)
 ![Status](https://img.shields.io/badge/status-research-orange)
 
 A research pipeline that predicts full outcome **distributions** for NBA points,
@@ -16,9 +16,10 @@ The design goal is honesty over optimism: every stage refuses to produce output
 it cannot support, and reports `NOT_READY` instead of guessing.
 
 > [!IMPORTANT]
-> **This does not currently produce bets.** The models train and predict correctly,
-> but probability calibration has not been fit yet, so every downstream gate is
-> closed by design. See [Project status](#project-status) for exactly why.
+> **This does not currently produce bets.** The models train and predict
+> correctly and the data joins are fixed, but the database holds a single day of
+> odds — too few lined rows to fit probability calibration, so every downstream
+> gate stays closed by design. See [Project status](#project-status).
 > This is research software, not financial advice.
 
 ## Quick start
@@ -29,7 +30,7 @@ cd nba-props
 python3.11 -m venv .venv && source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 python setup_env.py
-python -m pytest -q          # expect: 237 passed
+python -m pytest -q          # expect: 270 passed
 ```
 
 That gets you a verified install and an empty local database. To collect data and
@@ -82,11 +83,11 @@ flowchart TD
 Pooled ensemble on a held-out, strictly-later test period (`2025-02-24` to `2025-04-13`).
 Reproduce with `python -m models.train`.
 
-| Stat | Test MAE | Test RMSE | Validation MAE |
-|---|---|---|---|
-| Points | **7.28** | 9.11 | 7.35 |
-| Rebounds | **2.15** | 2.71 | 1.99 |
-| Assists | **1.82** | 2.42 | 2.03 |
+| Stat | Test MAE | Validation MAE |
+|---|---|---|
+| Points | **7.16** | 7.30 |
+| Rebounds | **2.02** | 1.98 |
+| Assists | **2.02** | 2.04 |
 
 Test and validation scores track closely, which is the signal you want — no large
 gap means no meaningful overfit to the validation period.
@@ -97,8 +98,8 @@ win rate) exist yet.
 
 ## Project status
 
-Last verified 2026-09-08 against 10 tracked players, 2,186 player-game rows,
-and 5,919 sportsbook lines.
+Last verified 2026-09-08 against 10 tracked players, 2,645 player-game rows
+across three seasons, and 5,919 sportsbook lines.
 
 ### Working
 
@@ -111,19 +112,35 @@ and 5,919 sportsbook lines.
 | Prediction CLI | `models.predict` returns monotone quantiles and sane values on real rows |
 | Selection and staking | No-vig conversion, both sides evaluated, deterministic EV tiebreaks, Kelly under caps |
 | Execution controls | `health_check`, `close_spec`, `settlement_engine`, `drift_monitor` all run correctly |
-| Tests | 237 passing in CI |
+| Tests | 270 passing in CI |
 
 ### Blocked
 
-These are **data coverage** problems, not modeling problems. Each gate fails
-closed rather than emitting an unsupported bet.
+Three join defects that silently dropped rows have been **fixed** (see
+[`storage/name_matching.py`](storage/name_matching.py),
+[`storage/dates.py`](storage/dates.py), and
+[`storage/event_mapping.py`](storage/event_mapping.py)):
 
-| Blocker | Cause | Effect |
+| Was broken | Fix | Measured effect |
 |---|---|---|
-| Name joins drop players | `player_lookup` stores `Luka Dončić`; the odds feed returns `Luka Doncic`. The `lower(trim(...))` joins do not fold diacritics. | Matching rows silently vanish in three modules |
-| Tip times unrecoverable | `schedule_scraper` reads `GAME_STATUS_TEXT`, which becomes `Final` or `1st Qtr` after tipoff and no longer parses. Event mapping requires a non-null `tip_time_utc`. | A game collected late can never be mapped — **collect the schedule before tipoff** |
-| Calibration unfit | Too few lined rows reach the calibration window (downstream of the two above) | `calibration_status = NOT_READY`; replay and shadow emit zero bets |
-| Narrow coverage | `scrapers/nba_scraper.py` tracks a hardcoded list of ten `PLAYER_IDS` | Small sample |
+| Name joins dropped accented players — `player_lookup` stores `Luka Dončić`, the odds feed returns `Luka Doncic` | One normalizer shared by SQL and pandas, folding accents and punctuation | Joined prop rows **88 → 228** |
+| Games collected after tipoff could never be mapped, because `GAME_STATUS_TEXT` becomes `Final` and stops parsing | Mapping falls back to an unambiguous teams-plus-Eastern-date key; the scraper backfills a null tip time | Mapped events **2 → 6** |
+| `game_date` is stored in two formats (`Nov 17, 2023` and `2025-11-18`); pandas inferred one and coerced the rest to `NaT` | Parse each value independently | Training rows **459 → 1,552** |
+
+Sportsbook lines now attach to training rows, where previously none did.
+
+**What still blocks calibration is data volume, not code.** Fitting the
+isotonic calibrator needs at least 50 rows carrying a sportsbook line inside
+the calibration window; the database currently holds **2**, because it contains
+a single day of odds. Walk-forward replay separately needs 40 distinct odds
+dates before it will trade, and has 1.
+
+Collecting odds daily across a stretch of the season is the remaining
+prerequisite. Until then `calibration_status` stays `NOT_READY` and every
+downstream stage correctly emits nothing.
+
+Coverage is also narrow: [`scrapers/nba_scraper.py`](scrapers/nba_scraper.py)
+tracks a hardcoded list of ten `PLAYER_IDS`.
 
 ### Not on the main path
 
@@ -170,7 +187,7 @@ Full command reference and options: [02_Run](02_Run/).
 | [`models/`](models/) | Pooled ensemble, training, prediction, minutes HMM |
 | [`execution/`](execution/) | Selection, staking, health, settlement, drift controls |
 | [`analysis/`](analysis/) | Walk-forward replay, backtests, attribution |
-| [`tests/`](tests/) | 237 tests covering the pipeline |
+| [`tests/`](tests/) | 270 tests covering the pipeline |
 
 ## Documentation
 

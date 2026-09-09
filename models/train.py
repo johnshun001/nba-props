@@ -11,6 +11,8 @@ import duckdb
 import pandas as pd
 
 from config import load_config, project_path
+from storage.dates import parse_game_dates
+from storage.name_matching import normalized_name_sql
 from features.pregame_features import build_pregame_features
 from models.ensemble import SUPPORTED_STATS, train_pooled_ensemble
 from models.hmm_minutes import build_walk_forward_hmm_features
@@ -31,13 +33,13 @@ def attach_historical_sportsbook_lines(con, features: pd.DataFrame) -> pd.DataFr
     required_tables = ("player_lookup", "prop_lines", "event_game_map")
     if not all(_table_exists(con, table) for table in required_tables):
         return features
-    lines = con.execute("""
+    lines = con.execute(f"""
         SELECT mapped.game_id, pl.market, pl.line, pl.asof_time,
                pl.bookmaker, pl.line_id, lookup.player_id
         FROM prop_lines pl
         JOIN event_game_map mapped ON mapped.event_id = pl.event_id
         JOIN player_lookup lookup
-          ON lower(trim(pl.player_name)) = lower(trim(lookup.full_name))
+          ON {normalized_name_sql("pl.player_name")} = {normalized_name_sql("lookup.full_name")}
         WHERE pl.over_price IS NOT NULL AND pl.under_price IS NOT NULL
     """).fetchdf()
     if lines.empty:
@@ -130,7 +132,7 @@ def load_training_frame(con) -> pd.DataFrame:
             games = games.drop(columns="event_prediction_time")
     games["prediction_time"] = pd.to_datetime(
         games["prediction_time"], utc=True, errors="coerce"
-    ).fillna(pd.to_datetime(games["game_date"], utc=True, errors="coerce"))
+    ).fillna(parse_game_dates(games["game_date"]))
     team_games = con.execute("SELECT * FROM team_game_logs").fetchdf() if _table_exists(con, "team_game_logs") else None
     if team_games is not None and not team_games.empty and "opponent_id" in games:
         team_ids = team_games[["game_id", "team_id"]].drop_duplicates()
